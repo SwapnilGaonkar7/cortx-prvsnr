@@ -35,6 +35,9 @@ srvnode_2_hostspec=srvnode-2
 hostspec=
 srvnode_2_opt=false
 
+srvnode_3_hostspec=srvnode-3
+srvnode_3_opt=false
+
 salt_master_hostname=
 prvsnr_repo_src=rpm
 dev_repo=false
@@ -99,9 +102,18 @@ function options_parser {
 
     case "$1" in
         --srvnode-2)
+			echo "2nd node is provided---------------------------------"
             srvnode_2_hostspec="$2"
             srvnode_2_opt=true
+			dualnode=true
             ;;
+		--srvnode-3)
+			echo "3rd node is provided---------$2------------------------"
+			srvnode_3_hostspec="$2"
+			srvnode_3_opt=true
+			dualnode=false
+			trinode=true
+			;;
         --repo-src)
             case "$2" in
                 local|github|gitrepo|rpm)
@@ -118,6 +130,8 @@ function options_parser {
             ;;
         -S|--singlenode)
             singlenode=true
+			dualnode=false
+			trinode=false
             ;;
         --bundle)
             bundled_release=true
@@ -145,7 +159,7 @@ function positional_args_parser {
 }
 
 
-parse_args 'S' 'srvnode-2:,repo-src:,salt-master:,singlenode,bundle,dev' options_parser positional_args_parser "$@"
+parse_args 'S' 'srvnode-2:,srvnode-3:,repo-src:,salt-master:,singlenode,bundle,dev' options_parser positional_args_parser "$@"
 
 if [[ "$verbosity" -ge 2 ]]; then
     set -x
@@ -189,6 +203,8 @@ else
     fi
 fi
 
+echo "Here 11..$ssh_config, $hostspec, $srvnode_2_hostspec,"
+
 # CHECK srvnode-1/srvnode-2 OCCURENCE IN CUSTOM SSH-CONFIG
 if [[ $default_ssh_disabled == true ]]; then
     if [[ -n "$hostspec" ]]; then
@@ -197,13 +213,21 @@ if [[ $default_ssh_disabled == true ]]; then
             exit 1
         fi
     fi
-    if [[ "$singlenode" == false ]]; then
+    if [[ "$dualnode" == true || "$trinode" == true ]]; then
         if [[ -z "$ssh_config" || -z "$(check_host_in_ssh_config "$srvnode_2_hostspec" "$ssh_config" 2>/dev/null)" ]]; then
             l_error "Invalid ssh configuration provided for srvnode-2 in ssh-config ($ssh_config)"
             exit 1
         fi
     fi
+	if [[ "$trinode" == true ]]; then
+        if [[ -z "$ssh_config" || -z "$(check_host_in_ssh_config "$srvnode_3_hostspec" "$ssh_config" 2>/dev/null)" ]]; then
+            l_error "Invalid ssh configuration provided for srvnode-3 in ssh-config ($ssh_config)"
+            exit 1
+        fi
+    fi
 fi
+
+echo "Here 12..$prvsnr_version, $prvsnr_repo_src"
 
 # TODO
 #   - check that node(s) are reachable using provided ssh configuration
@@ -226,6 +250,7 @@ elif [[ "$prvsnr_repo_src" == "rpm" ]]; then
     fi
 fi
 
+echo "Here 13..$prvsnr_version, $prvsnr_repo_src, $salt_master_hostname"
 
 if [[ -z "$prvsnr_version" && "$prvsnr_repo_src" != "local" && "$prvsnr_repo_src" != "rpm" ]]; then
     l_error 'provisioner repo version is unknown'
@@ -247,65 +272,108 @@ if [[ -z "$salt_master_hostname" && "$singlenode" != true ]]; then
     fi
 fi
 
-# SETUP SRVNODE-1
-# FIXME bundle && redhat subscription
-if grep -q "Red Hat" /etc/*-release || [[ "$bundled_release" == true ]]; then
-    install_salt_repo "$hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
+node_count=0
+if [[ "$singlenode" == true ]]; then
+	node_count=1
+else if [[ "$dualnode" == true ]]; then
+	node_count=2
 else
-    install_repos "$hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
+	node_count=3
+fi
 fi
 
-configure_firewall "$hostspec" "$ssh_config" "$sudo"
+#echo "node_count = $node_count ."
+#
+## SETUP SRVNODE-1
+## FIXME bundle && redhat subscription
+#if grep -q "Red Hat" /etc/*-release || [[ "$bundled_release" == true ]]; then
+#    install_salt_repo "$hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
+#else
+#    install_repos "$hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
+#fi
+#
+#configure_firewall "$hostspec" "$ssh_config" "$sudo"
+#
+#install_salt "$hostspec" "$ssh_config" "$sudo"
+#
+#install_provisioner "$prvsnr_repo_src" "$prvsnr_version" "$hostspec" "$ssh_config" "$sudo" "$node_count" "$INSTALLDIR" "$dev_repo"
+#
+#configure_salt srvnode-1 "$hostspec" "$ssh_config" "$sudo" true 127.0.0.1 "$INSTALLDIR"
+#
+#accept_salt_key srvnode-1 "$hostspec" "$ssh_config" "$sudo"
+#
+#set_node_id "$hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
+#
+#set_cluster_id "$cluster_id" "$hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
+#
+## configure_multipath srvnode-1 "$hostspec" "$ssh_config" "$sudo" true
+#
+#if [[ "$bundled_release" == true ]]; then
+#    provisioner pillar_set release/type \"bundle\"
+#fi
+#configure_provisioner_api_logs "$hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
+#
+## SETUP SRVNODE-2
+#if [[ "$dualnode" == true || "$trinode" == true ]]; then
+#    if grep -q "Red Hat" /etc/*-release; then
+#        install_salt_repo "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
+#    else
+#        install_repos "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
+#    fi
+#
+#    configure_firewall "$srvnode_2_hostspec" "$ssh_config" "$sudo"
+#
+#    install_salt "$srvnode_2_hostspec" "$ssh_config" "$sudo"
+#
+#    install_provisioner "$prvsnr_repo_src" "$prvsnr_version" "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$node_count" "$INSTALLDIR" "$dev_repo"
+#
+#    configure_salt srvnode-2 "$srvnode_2_hostspec" "$ssh_config" "$sudo" false "$salt_master_hostname" "$INSTALLDIR"
+#    # Always use salt-master hostspec to execute this step
+#    accept_salt_key srvnode-2 "$hostspec" "$ssh_config" "$sudo"
+#
+#    set_node_id "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
+#
+#    set_cluster_id "$cluster_id" "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
+#
+#    # configure_multipath srvnode-2 "$srvnode_2_hostspec" "$ssh_config" "$sudo" false
+#
+#fi
+#
+## SETUP SRVNODE-3
+#if [[ "$trinode" == true ]]; then
+#    if grep -q "Red Hat" /etc/*-release; then
+#        install_salt_repo "$srvnode_3_hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
+#    else
+#        install_repos "$srvnode_3_hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
+#    fi
+#
+#    configure_firewall "$srvnode_3_hostspec" "$ssh_config" "$sudo"
+#
+#    install_salt "$srvnode_3_hostspec" "$ssh_config" "$sudo"
+#
+#    install_provisioner "$prvsnr_repo_src" "$prvsnr_version" "$srvnode_3_hostspec" "$ssh_config" "$sudo" "$node_count" "$INSTALLDIR" "$dev_repo"
+#	
+#    configure_salt srvnode-3 "$srvnode_3_hostspec" "$ssh_config" "$sudo" false "$salt_master_hostname" "$INSTALLDIR"
+#    # Always use salt-master hostspec to execute this step
+#    accept_salt_key srvnode-3 "$hostspec" "$ssh_config" "$sudo"
+#
+#    set_node_id "$srvnode_3_hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
+#
+#    set_cluster_id "$cluster_id" "$srvnode_3_hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
+#
+#    # configure_multipath srvnode-2 "$srvnode_2_hostspec" "$ssh_config" "$sudo" false
+#
+#fi
 
-install_salt "$hostspec" "$ssh_config" "$sudo"
-
-install_provisioner "$prvsnr_repo_src" "$prvsnr_version" "$hostspec" "$ssh_config" "$sudo" "$singlenode" "$INSTALLDIR" "$dev_repo"
-
-configure_salt srvnode-1 "$hostspec" "$ssh_config" "$sudo" true 127.0.0.1 "$INSTALLDIR"
-
-accept_salt_key srvnode-1 "$hostspec" "$ssh_config" "$sudo"
-
-set_node_id "$hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
-
-set_cluster_id "$cluster_id" "$hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
-
-# configure_multipath srvnode-1 "$hostspec" "$ssh_config" "$sudo" true
-
-if [[ "$bundled_release" == true ]]; then
-    provisioner pillar_set release/type \"bundle\"
-fi
-configure_provisioner_api_logs "$hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
-
-# SETUP SRVNODE-2
-if [[ "$singlenode" != true ]]; then
-    if grep -q "Red Hat" /etc/*-release; then
-        install_salt_repo "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
-    else
-        install_repos "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$bundle_base_url"
-    fi
-
-    configure_firewall "$srvnode_2_hostspec" "$ssh_config" "$sudo"
-
-    install_salt "$srvnode_2_hostspec" "$ssh_config" "$sudo"
-
-    install_provisioner "$prvsnr_repo_src" "$prvsnr_version" "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$singlenode" "$INSTALLDIR" "$dev_repo"
-
-    configure_salt srvnode-2 "$srvnode_2_hostspec" "$ssh_config" "$sudo" false "$salt_master_hostname" "$INSTALLDIR"
-    # Always use salt-master hostspec to execute this step
-    accept_salt_key srvnode-2 "$hostspec" "$ssh_config" "$sudo"
-
-    set_node_id "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
-
-    set_cluster_id "$cluster_id" "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
-
-    # configure_multipath srvnode-2 "$srvnode_2_hostspec" "$ssh_config" "$sudo" false
-
-fi
+echo "Starting before update_bmc_ip"
 
 hostnamectl status | grep Chassis | grep -q server && {
     update_bmc_ip "srvnode-1" "$hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
-    if [[ "$singlenode" == false ]]; then
+    if [[ "$dualnode" == true || "$trinode" == true ]]; then
         update_bmc_ip "srvnode-2" "$srvnode_2_hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
+    fi
+	if [["$trinode" == true ]]; then
+        update_bmc_ip "srvnode-3" "$srvnode_3_hostspec" "$ssh_config" "$sudo" "$INSTALLDIR"
     fi
 }
 
@@ -314,6 +382,9 @@ if [[ -n "$srvnode_1_hostname" ]]; then
     l_info "Updating hostnames in cluster pillar"
     if [[ -n "$srvnode_2_hostname" ]]; then
         update_cluster_pillar_hostname "srvnode-2" "$srvnode_2_hostname"
+    fi
+	if [[ -n "$srvnode_3_hostname" ]]; then
+        update_cluster_pillar_hostname "srvnode-3" "$srvnode_3_hostname"
     fi
     update_cluster_pillar_hostname "srvnode-1" "$srvnode_1_hostname"
 fi

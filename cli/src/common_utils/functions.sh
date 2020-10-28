@@ -55,6 +55,7 @@ default_ssh_conf="/root/.ssh/config"
 default_ssh_disabled="false"
 srvnode_1_hostname=
 srvnode_2_hostname=
+srvnode_3_hostname=
 
 base_options_usage="\
   -h,  --help                     print this help and exit
@@ -832,6 +833,8 @@ function install_salt_repo {
     local _ssh_config="${2:-}"
     local _sudo="${3:-false}"
     local _bundle_base_url="${4:-}"
+	
+	echo "install_salt_repo. $_hostspec, $_ssh_config, $_sudo, $_bundle_base_url"
 
     local _cmd="$(build_command "$_hostspec" "$_ssh_config" "$_sudo" 2>/dev/null)"
 
@@ -1153,7 +1156,7 @@ function install_provisioner {
     local _hostspec="${3:-}"
     local _ssh_config="${4:-}"
     local _sudo="${5:-false}"
-    local _singlenode="${6:-false}"
+    local _node_count="${6:-0}"
     local _installdir="${7:-/opt/seagate/cortx/provisioner}"
     local _dev_repo="${8:-false}"
     local _os_release="rhel-7.7.1908"
@@ -1164,13 +1167,17 @@ function install_provisioner {
     local _tmp_dir=$(mktemp -d)
 
     local _cluster_sls_src
-    if [[ "$_singlenode" == true ]]; then
+    if [[ "$_node_count" == 1 ]]; then
         _cluster_sls_src="$_installdir/pillar/components/samples/singlenode.cluster.sls"
-    else
+    else if [[ "$_node_count" == 2 ]]; then
         _cluster_sls_src="$_installdir/pillar/components/samples/dualnode.cluster.sls"
+	else if [[ "$_node_count" == 3 ]]; then
+		_cluster_sls_src="$_installdir/pillar/components/samples/dualnode.cluster.sls" #TODO3
+	fi
     fi
+	fi
 
-    l_info "Installing repo on '$_hostspec' into $_installdir with $_repo_src as a source (version is $_prvsnr_version), singlenode is $_singlenode"
+    l_info "Installing repo on '$_hostspec' into $_installdir with $_repo_src as a source (version is $_prvsnr_version), node count is $_node_count"
 
     # assuming that 'local' mode would be used only in dev setup within the repo
     if [[ "$_repo_src" == "local" ]]; then
@@ -1780,6 +1787,9 @@ function setup_ssh {
     srvnode_1_hostname=`hostname -f`
     local _srvnode_1_user=`who | awk '{ print $1 }'`
     srvnode_2_hostname=`hostname_from_spec $srvnode_2_hostspec`
+	srvnode_3_hostname=`hostname_from_spec $srvnode_3_hostspec`
+	echo "Setup SSH :- $srvnode_2_hostname................"
+	echo "$srvnode_3_hostname................"
 
     if [[ $srvnode_1_hostname != *"."* ]]; then
         l_error "Short hostnames are not supported, please provide FQDN for srvnode-1"
@@ -1787,6 +1797,10 @@ function setup_ssh {
 
     if [[ $srvnode_2_hostname != *"."* ]]; then
         l_error "Short hostnames are not supported, please provide FQDN for srvnode-2"
+    fi
+	
+	if [[ $srvnode_3_opt == true && $srvnode_3_hostname != *"."* ]]; then
+        l_error "Short hostnames are not supported, please provide FQDN for srvnode-3"
     fi
 
     #local _srvnode_2_user=`user_from_spec $srvnode_2_hostspec`
@@ -1815,6 +1829,24 @@ function setup_ssh {
     sed -i "s/Host srvnode-2 .*/Host srvnode-2 ${srvnode_2_hostname}/" $default_ssh_conf
     line=`grep -A1 -n "Host srvnode-2" $default_ssh_conf | tail -1 | cut -f1 -d-`
     sed -ie "${line}s/.*/    HostName ${srvnode_2_hostname}/" $default_ssh_conf
+	
+	if [[ $srvnode_3_opt == true ]]; then
+		# update ssh_config file with srvnode-3 details
+		sed -i "s/Host srvnode-3 .*/Host srvnode-3 ${srvnode_3_hostname}/" $default_ssh_conf
+		line=`grep -A1 -n "Host srvnode-3" $default_ssh_conf | tail -1 | cut -f1 -d-`
+		sed -ie "${line}s/.*/    HostName ${srvnode_3_hostname}/" $default_ssh_conf
+		
+		# Check if the ssh works without password from node-1 to node-3
+		ssh -q -o "ConnectTimeout=5" $srvnode_3_hostspec exit || {
+			l_error "$srvnode_3_hostspec not reachable"
+			l_error "Couldn't do the ssh passwordless setup from $srvnode_1_hostname to $srvnode_3_hostspec"
+			l_error "please provide correct hostname using --srvnode-3 option"
+			l_error " OR use -F option to provide the correct ssh config file"
+			#Backup original ssh config file
+			cp "${default_ssh_conf}.bak" "$default_ssh_conf"
+			exit 1
+		}
+	fi
 
     # Check if the ssh works without password from node-1 to node-2
     ssh -q -o "ConnectTimeout=5" $srvnode_2_hostspec exit || {
@@ -1829,6 +1861,11 @@ function setup_ssh {
 
     # Copy the updated ssh config file to second node
     scp $default_ssh_conf $srvnode_2_hostspec:$default_ssh_conf
+	
+	if [[ $srvnode_3_opt == true ]]; then
+		# Copy the updated ssh config file to third node
+		scp $default_ssh_conf $srvnode_3_hostspec:$default_ssh_conf
+	fi
 
     # Check if the ssh works without password from node-2 to node-1
     ssh -q -o "ConnectTimeout=5" $srvnode_2_hostspec \
@@ -1840,6 +1877,19 @@ function setup_ssh {
         cp "${default_ssh_conf}.bak" "$default_ssh_conf"
         exit 1
     }
+	
+	if [[ $srvnode_3_opt == true ]]; then
+		# Check if the ssh works without password from node-3 to node-1
+		ssh -q -o "ConnectTimeout=5" $srvnode_3_hostspec \
+			"ssh -q -o ConnectTimeout=5 srvnode-1 exit; exit" || {
+			l_error "$srvnode_1_hostname is not reachable from $srvnode_3_hostspec"
+			l_error "Couldn't do the ssh passwordless setup"
+			l_error "Ensure the hosts are able to communicate with each other"
+			#Backup original ssh config file
+			cp "${default_ssh_conf}.bak" "$default_ssh_conf"
+			exit 1
+		}
+	fi
     
     echo "ssh passwordless setup done successfully" | tee -a "$log_file"
 }

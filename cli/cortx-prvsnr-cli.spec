@@ -74,6 +74,16 @@ Host srvnode-2 srvnode-2.localdomain
     IdentitiesOnly yes
     LogLevel ERROR
     BatchMode yes
+
+Host srvnode-3 srvnode-3.localdomain
+    HostName srvnode-3.localdomain
+    User root
+    UserKnownHostsFile /dev/null
+    StrictHostKeyChecking no
+    IdentityFile /root/.ssh/id_rsa_prvsnr
+    IdentitiesOnly yes
+    LogLevel ERROR
+    BatchMode yes	
 EOL
 
 #/bin/ssh-keygen -o -q -t rsa -b 4096 -a 100 -N '' -f id_rsa_prvsnr

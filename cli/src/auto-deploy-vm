@@ -39,6 +39,8 @@ trap trap_handler ERR
 srvnode_1_host=`hostname`
 srvnode_2_host=
 srvnode_2_passwd=
+srvnode_3_host=
+srvnode_3_passwd=
 tgt_build=
 cluster_ip=
 mgmt_vip=
@@ -48,9 +50,13 @@ mgmt_din=
 pvt_dip1=
 pvt_dip2=
 singlenode=false
+dualnode=false
+trinode=false
 
 srvnode_2_host_opt=false
 srvnode_2_passwd_opt=false
+srvnode_3_host_opt=false
+srvnode_3_passwd_opt=false
 tgt_build_opt=false
 cluster_ip_opt=false
 pub_din_opt=false
@@ -115,16 +121,34 @@ while [[ $# -gt 0 ]]; do
         -h|--help) usage; help; exit 0
         ;;
         -s)
+			dualnode=true;
             srvnode_2_host_opt=true
             [ -z "$2" ] &&
                 echo "Error: srvnode-2 not provided" && exit 1;
             srvnode_2_host="$2"
+	    echo "srvnode_2_host: $srvnode_2_host"
+            shift 2 ;;
+        -s1)
+			dualnode=false;
+			trinode=true;
+            srvnode_3_host_opt=true
+            [ -z "$2" ] &&
+                echo "Error: srvnode-3 not provided" && exit 1;
+            srvnode_3_host="$2"
+	    echo "srvnode_3_host: $srvnode_3_host"
             shift 2 ;;
         -p)
             srvnode_2_passwd_opt=true
             [ -z "$2" ] &&
                 echo "Error: srvnode-2 password not provided" && exit 1;
             srvnode_2_passwd="$2"
+            shift 2 ;;
+        -p1)
+            srvnode_3_passwd_opt=true
+            [ -z "$2" ] &&
+                echo "Error: srvnode-3 password not provided" && exit 1;
+            srvnode_3_passwd="$2"
+            echo "Password provided for 3rd node";
             shift 2 ;;
         -S)
 	    singlenode=true
@@ -198,9 +222,17 @@ if [[ "$singlenode" == false ]]; then
           "$srvnode_2_passwd_opt" == false ||
           "$tgt_build_opt" == false ]]; then
 
-	echo "Insufficient input provided"
+	echo "Insufficient input provided for 2nd node"
         usage
         exit 1
+    else if [[ "$srvnode_3_host_opt" == true &&
+          "$srvnode_2_passwd_opt" == false ]]; then
+
+	
+	echo "Insufficient input provided for 3rd node"
+        usage
+        exit 1
+	fi
     fi
 elif [[ "$tgt_build_opt" == false ]]; then
     echo "Insufficient input provided"
@@ -208,7 +240,9 @@ elif [[ "$tgt_build_opt" == false ]]; then
     exit 1
 fi
 
-if [[ "$singlenode" == false ]]; then
+echo "Begin:----$dualnode---$trinode"
+
+if [[ "$dualnode" == true || "$trinode" == true ]]; then
     ssh_tool="/usr/bin/sshpass"
     ssh_base_cmd="/bin/ssh"
     ssh_opts="-o UserKnownHostsFile=/dev/null\
@@ -216,7 +250,13 @@ if [[ "$singlenode" == false ]]; then
     user=root
     ssh_cred="$ssh_tool -p $srvnode_2_passwd"
     ssh_cmd="$ssh_base_cmd $ssh_opts $user@$srvnode_2_host"
-    remote_cmd="$ssh_cred $ssh_cmd"
+    remote_cmd1="$ssh_cred $ssh_cmd"
+	
+	if [[ "$trinode" == true ]]; then
+		ssh_cred="$ssh_tool -p $srvnode_3_passwd"
+		ssh_cmd="$ssh_base_cmd $ssh_opts $user@$srvnode_3_host"
+		remote_cmd2="$ssh_cred $ssh_cmd"
+	fi
 	
     ssh_tool_pkg=$(basename $ssh_tool)
     [ -f "$ssh_tool" ] || {
@@ -232,38 +272,56 @@ install_prvsnr_cli()
     echo "Target Node: $target_node" 2>&1|tee -a $LOG_FILE
     if [[ "$target_node" = "srvnode-1" ]]; then
 	rpm -qa | grep -q 'cortx' && {
-        echo "ERROR: cortx packages are already installed"
+        echo "ERROR: cortx packages are already installed on 1st node"
         echo "Please clean-up previous installtion from both the nodes and retry"
         exit 1
         }
         yum install -y $tgt_build/$(curl -s $tgt_build/|grep cortx-prvsnr-cli-1.0.0|sed 's/<\/*[^"]*"//g'|cut -d\" -f1)
         systemctl stop firewalld || true
         return 0
-    else
-        $remote_cmd <<-EOF
+    else if [[ "$target_node" = "srvnode-2" ]]; then
+        $remote_cmd1 <<-EOF
             set -eu
             rpm -qa | grep -q 'cortx' && {
-            echo "ERROR: cortx packages are already installed"
+            echo "ERROR: cortx packages are already installed on 2nd node"
             echo "Please clean-up previous installtion from both the nodes and retry"
             exit 1
             }
             yum install -y $tgt_build/$(curl -s $tgt_build/|grep cortx-prvsnr-cli-1.0.0|sed 's/<\/*[^"]*"//g'|cut -d\" -f1)
             systemctl stop firewalld || true
 	EOF
+	else
+		$remote_cmd2 <<-EOF
+				set -eu
+				rpm -qa | grep -q 'cortx' && {
+				echo "ERROR: cortx packages are already installed on 3rd node"
+				echo "Please clean-up previous installtion from both the nodes and retry"
+				exit 1
+				}
+				yum install -y $tgt_build/$(curl -s $tgt_build/|grep cortx-prvsnr-cli-1.0.0|sed 's/<\/*[^"]*"//g'|cut -d\" -f1)
+				systemctl stop firewalld || true
+		EOF
     fi
+	fi
 }
 
 install_config_prvsnr()
 {   
-    if [[ "$singlenode" == false ]]; then
-	set -eu
-	echo -e "\n\t***** INFO: Installing cortx-prvsnr-cli on node-2 *****" 2>&1 | tee -a $LOG_FILE
-	sleep 1
-	install_prvsnr_cli "srvnode-2"
-    fi
-    echo -e "\n\t***** INFO: Installing cortx-prvsnr-cli on node-1*****" 2>&1 | tee -a $LOG_FILE
-    sleep 1
-    install_prvsnr_cli "srvnode-1"
+    #if [[ "$trinode" == true ]]; then
+	#set -eu
+	#echo -e "\n\t***** INFO: Installing cortx-prvsnr-cli on node-3 *****" 2>&1 | tee -a $LOG_FILE
+	#sleep 1
+	#install_prvsnr_cli "srvnode-3"
+    #fi
+	#if [[ "$trinode" == true || "$dualnode" == true ]]; then
+	#set -eu
+	#echo -e "\n\t***** INFO: Installing cortx-prvsnr-cli on node-2 *****" 2>&1 | tee -a $LOG_FILE
+	#sleep 1
+	#install_prvsnr_cli "srvnode-2"
+    #fi
+    #echo -e "\n\t***** INFO: Installing cortx-prvsnr-cli on node-1*****" 2>&1 | tee -a $LOG_FILE
+    #sleep 1
+    #install_prvsnr_cli "srvnode-1"
 
     #export PATH=/usr/local/bin:$PATH
     #if [[ "$singlenode" == false ]]; then
@@ -273,7 +331,12 @@ install_config_prvsnr()
     # Run setup provisioner
     echo -e "\n\t***** INFO: Running setup-provisioner *****" 2>&1 | tee -a $LOG_FILE
     sleep 1
-    if [[ "$singlenode" == false ]]; then
+    if [[ "$trinode" == true ]]; then
+        echo -e "\n\tRunning sh /opt/seagate/cortx/provisioner/cli/src/setup-provisioner"\
+	        "--srvnode-2='$srvnode_2_host' --srvnode-3='$srvnode_3_host' $tgt_build" 2>&1 | tee -a $LOG_FILE
+        sh /opt/seagate/cortx/provisioner/cli/src/setup-provisioner --srvnode-2="$srvnode_2_host" --srvnode-3="$srvnode_3_host" $tgt_build 2>&1 | tee -a $LOG_FILE
+	echo "Done" 2>&1 | tee -a $LOG_FILE
+	else if [[ "$dualnode" == true ]]; then
         echo -e "\n\tRunning sh /opt/seagate/cortx/provisioner/cli/src/setup-provisioner"\
 	        "--srvnode-2='$srvnode_2_host' $tgt_build" 2>&1 | tee -a $LOG_FILE
         sh /opt/seagate/cortx/provisioner/cli/src/setup-provisioner --srvnode-2="$srvnode_2_host" $tgt_build 2>&1 | tee -a $LOG_FILE
@@ -283,6 +346,7 @@ install_config_prvsnr()
 	        "-S --salt-master="$srvnode_1_host" $tgt_build" 2>&1 | tee -a $LOG_FILE
         sh /opt/seagate/cortx/provisioner/cli/setup-provisioner -S --salt-master="$srvnode_1_host" $tgt_build 2>&1 | tee -a $LOG_FILE
         echo "Done" 2>&1 | tee -a $LOG_FILE
+	fi
     fi	
 }
 
@@ -317,7 +381,7 @@ update_pillar()
 
     provisioner pillar_set cluster/srvnode-1/storage/data_devices [\"${disk_list[-1]}\"]
 
-    if [[ "$singlenode" == false ]]; then
+    if [[ "$dualnode" == true || "$trinode" == true ]]; then
         provisioner pillar_set cluster/srvnode-2/hostname \"$srvnode_2_host\"
         provisioner pillar_set cluster/srvnode-2/network/data_nw/roaming_ip \"127.0.0.1\"
         
@@ -339,11 +403,42 @@ update_pillar()
             provisioner pillar_set cluster/srvnode-2/network/data_nw/pvt_ip_addr \"\"
         fi
 
-        disk_list=($($remote_cmd lsblk -ndp | grep disk | awk '{ print $1 }'))
+        disk_list=($($remote_cmd1 lsblk -ndp | grep disk | awk '{ print $1 }'))
 
         provisioner pillar_set cluster/srvnode-2/storage/metadata_device [\"${disk_list[-2]}\"]
 
         provisioner pillar_set cluster/srvnode-2/storage/data_devices [\"${disk_list[-1]}\"]
+
+
+    fi
+	
+	if [[ "$trinode" == true ]]; then
+        provisioner pillar_set cluster/srvnode-3/hostname \"$srvnode_3_host\"
+        provisioner pillar_set cluster/srvnode-3/network/data_nw/roaming_ip \"127.0.0.1\"
+        
+        if [[ "$mgmt_din_opt" == true ]]; then
+            provisioner pillar_set cluster/srvnode-3/network/mgmt_nw/iface [\"$mgmt_din\"]
+        else
+            provisioner pillar_set cluster/srvnode-3/network/mgmt_nw/iface [\"eth0\"]
+        fi
+
+        if [[ "$pub_din_opt" == true && "$pvt_din_opt" == true ]]; then
+            provisioner pillar_set cluster/srvnode-3/network/data_nw/iface [\"$pub_din\",\"$pvt_din\"]
+        else
+            provisioner pillar_set cluster/srvnode-3/network/data_nw/iface [\"eth1\",\"eth2\"]
+        fi
+
+        #if [[ "$pvt_dip2_opt" == true ]]; then
+        #    provisioner pillar_set cluster/srvnode-3/network/data_nw/pvt_ip_addr \"$pvt_dip2\"
+        #else
+        #    provisioner pillar_set cluster/srvnode-3/network/data_nw/pvt_ip_addr \"\"
+        #fi
+
+        disk_list=($($remote_cmd1 lsblk -ndp | grep disk | awk '{ print $1 }'))
+
+        provisioner pillar_set cluster/srvnode-3/storage/metadata_device [\"${disk_list[-2]}\"]
+
+        provisioner pillar_set cluster/srvnode-3/storage/data_devices [\"${disk_list[-1]}\"]
 
 
     fi
